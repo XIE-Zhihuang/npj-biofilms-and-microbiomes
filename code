@@ -1,0 +1,231 @@
+
+install.packages("WGCNA")
+library(WGCNA)
+source("http://bioconductor.org/biocLite.R") ##不需要
+biocLite(c("AnnotationDbi", "impute", "GO.db", "preprocessCore")) ##不需要
+library(igraph)
+otu<-read.table('otuwl.txt',header=T)
+cor<-corAndPvalue(t(otu),y=NULL,use = "pairwise.complete.obs",alternative="two.sided",method="spearman")
+cor.cor<-cor$cor
+cor.p<-cor$p
+cor.cor[cor.p>0.01|abs(cor.cor)<0.6] = 0
+cor.cor2<-abs(cor.cor)
+igraph = graph_from_adjacency_matrix(cor.cor,mode="undirected",weighted=TRUE,diag=FALSE)
+write.graph(igraph,file="0.6edge.txt",format="ncol")
+g<-graph_from_adjacency_matrix(cor.cor2,mode="undirected",weighted=TRUE,diag=FALSE)
+
+##calculate topology index
+length(V(g))#number of nodes
+length(E(g))#number of edges
+clusters(g)$no
+edge_density(g)#edge density
+transitivity(g, type="global")#global clustering coefficient
+transitivity(g, type="average")#average clustering coefficient
+centralization.degree(g)$centralization#degree centralization
+centralization.betweenness(g)$centralization#betweenness centralization
+centralization.evcent(g)$centralization#eigenvector centralization
+DegreeB= degree(g)
+summary(DegreeB)#Mean connectivity
+write.table(DegreeB,file=" DegreeB.txt",quote=F,sep="\t")
+betweennessB = betweenness(g)
+write.table(betweennessB,file="betweennessB.txt",quote=F,sep="\t")
+transitivityB =transitivity(g, type="local")
+write.table(transitivityB,file=" transitivityB.txt",quote=F,sep="\t")
+closeB=closeness(g)
+write.table(closeB,file="closeB.txt",quote=F,sep="\t")
+
+#Run Modularity analysis and save results
+cwt=cluster_walktrap(g)
+modularity(g,membership(cwt))#Modularity
+write.table(cwt$names,file="names.txt",quote=F,sep="\t")
+a=as.data.frame(cwt$membership)
+b=as.data.frame(cwt$names)
+c=cbind(b,a)
+write.table(c,file="ModularityB.txt",quote=F,sep="\t")
+
+#calculate within-module connectivity (z score) and among-module connectivity (c score)
+library(sqldf)
+zp=read.table("zp.txt",header=T)
+n1=sqldf("select fromNode,tonode_module,sum(number) as links,avg(fromnode_module) as from_module from zp group by fromNode,tonode_module")
+w=which(n1$tonode_module==n1$from_module)
+n2=data.frame(which=w,n1=n1[w,])
+names(n2)=c("which","fromNode","tonode_module","links","from_module")
+#calculate average and stdev value for each module
+n3.1=sqldf("select tonode_module,avg(links) as average from n2 group by tonode_module")
+library(RH2)
+n3.2=sqldf("select tonode_module,STDDEV_POP(links) as stdev from n2 group by tonode_module")
+detach(package:RH2)
+n3=cbind(n3.1,n3.2);n3=n3[,-3]
+n2[,6:7]=c(0);names(n2)[6:7]=c("ave","std")
+#assign average and stdev value to each node in n2
+for (i in 1:length(n2[,1])){
+  n2[i,6]=n3[which(n2[i,3]==n3[,1]),2]
+  n2[i,7]=n3[which(n2[i,3]==n3[,1]),3]
+}
+#calculate z score of each node based on formula: z=(link-link.average)/link.stdev
+n2[,8]=(n2[,4]-n2[,6])/n2[,7];names(n2)[8]="z-score"
+write.table(n2[,c(2,8)],file="z-score_spiec.txt",sep="\t")
+#c score
+#split the data frame based on node name
+tmp=split(n1, n1$fromNode)
+#subset the "links" column and calculate c score of each node based on formula: c=1-(sum(links^2)/sum(links)^2)
+c.table=c()
+a=c()
+for (i in 1:length(tmp)) {
+  a=subset(as.data.frame(tmp[i]),select=3)
+  c.value=1-(sum(a^2)/sum(a)^2)
+  c.table=rbind(c.table,c.value);rownames(c.table)[i]=names(a)
+}
+write.table(c.table,file="c-score_spiec.txt",sep="\t")
+
+#Plot ZC space
+library(ggplot2)
+library(ggthemes)
+zc=read.table("zcplot.txt",header=T)
+names(zc)
+p=ggplot(zc,aes(c,z))
+pl<-p+geom_point(aes(color=Category),size=2.5)+geom_hline(yintercept = 2.5,linetype=2)+geom_vline(xintercept = 0.62,linetype=2)+theme_few()+
+  xlab(label="Among-module connectivity")+ylab(label="Within-module connectivity")
+
+#calculating randomized network and their topology indices
+rn=list()#a blank list
+for (x in seq_len(999L)) {
+  rn[[x]] <- sample_gnm(156, 3272)#use loop to aquire 999 randomized networks based on given number of node and edge
+}
+#define several empty dataframe to save different indices
+tr=data.frame(matrix(NA,999,1))
+ta=data.frame(matrix(NA,999,1))
+gr=data.frame(matrix(NA,999,1))
+cd=data.frame(matrix(NA,999,1))
+cb=data.frame(matrix(NA,999,1))
+ce=data.frame(matrix(NA,999,1))
+mo=data.frame(matrix(NA,999,1))
+#use loop to get topological indices for each randomized network
+for (x in 1:length(rn)) {
+  tr[x,1]=transitivity(rn[[x]], type="global")
+  ta[x,1]=transitivity(rn[[x]], type="average")
+  gr[x,1]=graph.density(rn[[x]])
+  cd[x,1]=centralization.degree(rn[[x]])$centralization
+  cb[x,1]=centralization.betweenness(rn[[x]])$centralization
+  ce[x,1]=centralization.evcent(rn[[x]])$centralization
+}
+for (x in 1:length(rn)) {
+  cwt=cluster_walktrap(rn[[x]])
+  mo[x,1]=modularity(rn[[x]],membership(cwt))
+}
+#write tables
+topo_rand=cbind(tr,ta,gr,cd,cb,ce,mo)
+write.table(topo_rand,file="randomized_toplogy.txt",sep="\t")
+
+
+RDA
+library(vegan)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+otu=read.table("C:/Users/DELL/Desktop/OTU2.txt",header=T) 
+env=read.table("C:/Users/DELL/Desktop/ENV.txt",header=T)
+env=subset(env, select=c(PH,AK,AP,NO3_N,NH4_N,TC,TN,TC_TN,TP,TK))
+otut = t(otu) 
+mycolor<-brewer.pal(12, "Set3")
+spp=decostand(otut,method = "hellinger")
+##fcc=log10(env)
+uu=rda(spp~.,env)
+ii=summary(uu)
+sp=as.data.frame(ii$species[,1:2])*5
+st=as.data.frame(ii$sites[,1:2])
+yz=as.data.frame(ii$biplot[,1:2])
+#group1 = c('YCK','YC','YK','TCK','TC','TK')
+design = read.table("C:/Users/DELL/Desktop/design.txt", header=T, row.names=1, sep="\t")
+group1 = design$genotype
+
+p<- ggplot() +
+  geom_point(data = st,aes(RDA1,RDA2,colour=group1,shape = group1),size=4)
+p
+
+p=p+geom_segment(data = yz,aes(x = 0, y = 0, xend = RDA1, yend = RDA2), 
+                 arrow = arrow(angle=22.5,length = unit(0.35,"cm"),
+                               type = "closed"),linetype=1, size=0.6,colour = "gray")+
+  geom_text_repel(data = yz,aes(RDA1,RDA2,label=row.names(yz)))+
+  #labs(x="RDA1 42.72%",y="RDA2 26.10%")+
+  geom_hline(yintercept=0,linetype=3,size=1) + 
+  geom_vline(xintercept=0,linetype=3,size=1)+
+  theme_bw()+theme(panel.grid=element_blank())
+p
+p+
+  scale_color_manual(values = mycolor[c(3,1,6,4,2,5)])+
+  scale_shape_manual(values = c(16,16,16,16,16,16))
+
+
+
+#geom_segment(data = sp,aes(x = 0, y = 0, xend = RDA1, yend = RDA2), 
+arrow = arrow(angle=22.5,length = unit(0.35,"cm"),type = "closed"),linetype=1,size=0.6,colour = "red")+
+  #geom_text_repel(data = sp,aes(RDA1,RDA2,label=row.names(sp)))
+
+
+
+library(vegan)
+# 读取OTU数据表
+方法1：
+点击右上角的Import Dataset,(heading)选择"yes"，(row names)选择"Use first column"
+方法2：
+otub=read.table("otu.txt",header=T)
+# 定义进行比较的2个处理所在的行列（第1行和第1列作为表头，以Excel中的行列数为主）
+otu1=otub[c(1:8,9:16)]
+# 将OTU数据表进行“转置”
+otu1=t(otu1)
+# 定义每个处理的重复数
+group=c(1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2)
+# 并列的3种方法
+# Adonis分析
+ad=adonis(otu1~group,permutations = 999,distance = "bray") # 基于Bray-Curtis距离
+ad=adonis(otu1~group,permutations = 999,distance = "wunifrac") # 基于Weighted UniFrac距离
+ad
+# MRPP分析
+mp=mrpp(otu1,group,permutations = 999, distance = "bray") # 基于Bray-Curtis距离
+mp=mrpp(otu1,group,permutations = 999, distance = "wunifrac") # 基于Weighted UniFrac距离
+mp
+# Anosim分析
+an=anosim(otu1,group,permutations = 999 , distance = "bray") # 基于Bray-Curtis距离
+an=anosim(otu1,group,permutations = 999 , distance = "wunifrac") # 基于Weighted UniFrac距离
+an
+
+#pcoa
+library(vegan)
+otu <- read.delim('N11F.txt', row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE)
+otu <- data.frame(t(otu))
+distance <- vegdist(otu, method = 'bray')
+pcoa <- cmdscale(distance, k = (nrow(otu) - 1), eig = TRUE)
+write.table(as.matrix(distance), 'bray.csv', quote = F)  ##生成矩阵
+
+library(ggplot2)
+design = read.table("design.txt", header=T, row.names=1, sep="\t")
+design$group1=design$group1
+
+
+# method = c("weighted_unifrac","unweighted_unifrac","bray_curtis")
+#beta = read.table("bray.txt", header=T, row.names=1, sep="\t", comment.char="") 
+beta = read.csv("bray.csv",header=T, row.names=1)
+# k is dimension, 3 is recommended; eig is eigenvalues
+pcoa = cmdscale(beta, k = 4, eig=T)
+# get coordinate string, format to dataframme
+points = as.data.frame(pcoa$points) 
+eig = pcoa$eig
+# rename group name
+levels(sub_design$group2)=c("N11a","A11a","N11b","A11b","N11c","A11c","N11d","A11d")
+points = cbind(points, sub_design$group2)
+colnames(points) = c("PC1", "PC2", "PC3", "PC4","group") 
+
+p <- ggplot(points, aes(PC1, PC2,group = group)) +
+  geom_vline(xintercept = 0, color = 'gray', size = 0.4,linetype="dashed") + 
+  geom_hline(yintercept = 0, color = 'gray', size = 0.4,linetype="dashed") +
+  geom_point(aes(fill = group,shape = group),color ='white', size = 8, alpha = 0.8) + 
+  labs(x=paste("PCoA 1 (", format(100 * eig[1] / sum(eig), digits=4), "%)", sep=""),
+       y=paste("PCoA 2 (", format(100 * eig[2] / sum(eig), digits=4), "%)", sep=""))+
+  scale_shape_manual(values = c(21, 24,21, 24,21, 24,21, 24)) + #可在这里修改点的形状
+  theme_bw()+theme(panel.grid=element_blank())
+p
+##p=p + stat_ellipse(aes(x = PC1, y = PC2, fill = group), geom = "polygon", alpha = 0.2,level=0.68,linetype = 2,col="gray")
+p+scale_fill_manual(values = c("#6495ED","#4169E1","#000080","#00008B","#6495ED","#4169E1","#000080","#00008B"))
+
+
